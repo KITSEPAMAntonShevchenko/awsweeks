@@ -3,16 +3,18 @@ name: Terraform Apply
 on:
   push:
     branches: [main]
-  workflow_dispatch:        # lets you (or a checker) start it manually / via API
+  workflow_dispatch:
 
 concurrency:
-  group: terraform-main     # never run two applies at once
+  group: terraform-main
   cancel-in-progress: false
 
 env:
-  AWS_DEFAULT_REGION: eu-west-1
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
 
