@@ -1,0 +1,61 @@
+name: CodeDeploy Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: codedeploy-main
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  CODEDEPLOY_APP: cmtr-ac829345-app
+  CODEDEPLOY_GROUP: cmtr-ac829345-dg
+  S3_BUCKET: ${{ vars.CODEDEPLOY_BUCKET }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check appspec.yml exists
+        run: test -f appspec.yml || { echo "appspec.yml not found at repo root"; exit 1; }
+
+      - name: Build bundle
+        run: |
+          BUNDLE="${CODEDEPLOY_APP}-${GITHUB_SHA::8}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
+          echo "BUNDLE=${BUNDLE}" >> "$GITHUB_ENV"
+          zip -r "${BUNDLE}" . -x '.git/*' -x '.github/*'
+
+      - name: Upload bundle to S3
+        run: aws s3 cp "${BUNDLE}" "s3://${S3_BUCKET}/${CODEDEPLOY_APP}/${BUNDLE}"
+
+      - name: Create deployment
+        run: |
+          DEPLOYMENT_ID=$(aws deploy create-deployment \
+            --application-name "${CODEDEPLOY_APP}" \
+            --deployment-group-name "${CODEDEPLOY_GROUP}" \
+            --s3-location bucket="${S3_BUCKET}",key="${CODEDEPLOY_APP}/${BUNDLE}",bundleType=zip \
+            --file-exists-behavior OVERWRITE \
+            --description "GitHub ${GITHUB_SHA::8} run ${GITHUB_RUN_ID}" \
+            --query deploymentId --output text)
+          echo "Deployment: ${DEPLOYMENT_ID}"
+          echo "DEPLOYMENT_ID=${DEPLOYMENT_ID}" >> "$GITHUB_ENV"
+
+      - name: Wait for deployment to succeed
+        run: aws deploy wait deployment-successful --deployment-id "${DEPLOYMENT_ID}"
+
+      - name: Show failure details
+        if: failure() && env.DEPLOYMENT_ID != ''
+        run: |
+          aws deploy get-deployment --deployment-id "${DEPLOYMENT_ID}" \
+            --query 'deploymentInfo.[status,errorInformation]' --output json
+          aws deploy list-deployment-instances --deployment-id "${DEPLOYMENT_ID}" --output text
