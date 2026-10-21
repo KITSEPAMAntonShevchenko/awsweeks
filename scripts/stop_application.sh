@@ -1,0 +1,1 @@
+pkill -f "python3 /opt/app/app.py" || true
