@@ -17,23 +17,22 @@ env:
   AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
   CODEDEPLOY_APP: cmtr-ac829345-app
   CODEDEPLOY_GROUP: cmtr-ac829345-dg
-  S3_BUCKET: ${{ vars.CODEDEPLOY_BUCKET }}
+  S3_BUCKET: ${{ vars.CODEDEPLOY_BUCKET || 'cmtr-ac829345-app-s3' }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check appspec.yml exists
-        run: test -f appspec.yml || { echo "appspec.yml not found at repo root"; exit 1; }
-
       - name: Build bundle
         run: |
+          test -f appspec.yml || { echo "appspec.yml not found at repo root"; exit 1; }
           BUNDLE="${CODEDEPLOY_APP}-${GITHUB_SHA::8}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.zip"
           echo "BUNDLE=${BUNDLE}" >> "$GITHUB_ENV"
-          zip -r "${BUNDLE}" . -x '.git/*' -x '.github/*'
+          zip -qr "${BUNDLE}" . -x '.git/*' -x '.github/*'
 
       - name: Upload bundle to S3
         run: aws s3 cp "${BUNDLE}" "s3://${S3_BUCKET}/${CODEDEPLOY_APP}/${BUNDLE}"
@@ -47,11 +46,26 @@ jobs:
             --file-exists-behavior OVERWRITE \
             --description "GitHub ${GITHUB_SHA::8} run ${GITHUB_RUN_ID}" \
             --query deploymentId --output text)
-          echo "Deployment: ${DEPLOYMENT_ID}"
+          echo "Started deployment ${DEPLOYMENT_ID}"
+          echo "Track it: https://${AWS_REGION}.console.aws.amazon.com/codesuite/codedeploy/deployments/${DEPLOYMENT_ID}?region=${AWS_REGION}"
           echo "DEPLOYMENT_ID=${DEPLOYMENT_ID}" >> "$GITHUB_ENV"
 
       - name: Wait for deployment to succeed
-        run: aws deploy wait deployment-successful --deployment-id "${DEPLOYMENT_ID}"
+        run: |
+          DEADLINE=$(( $(date +%s) + 25*60 ))
+          while true; do
+            STATUS=$(aws deploy get-deployment --deployment-id "${DEPLOYMENT_ID}" \
+              --query 'deploymentInfo.status' --output text)
+            echo "$(date -u +%H:%M:%S) ${STATUS}"
+            case "${STATUS}" in
+              Succeeded) echo "Deployment succeeded"; exit 0 ;;
+              Failed|Stopped) echo "Deployment ${STATUS}"; exit 1 ;;
+            esac
+            if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+              echo "Timed out waiting for deployment"; exit 1
+            fi
+            sleep 10
+          done
 
       - name: Show failure details
         if: failure() && env.DEPLOYMENT_ID != ''
